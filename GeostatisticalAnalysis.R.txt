@@ -1,0 +1,197 @@
+################################################################################################
+## Empirical variogram example: a cautionary tale
+################################################################################################
+
+library(fields)
+
+##
+## Data setup: Modeling maximum spring temperature in Colorado
+##
+
+load("~/Documents/Classes/Spring2019/5430/data/COmonthlyMet.RData")
+
+y <- CO.tmax.MAM.climate
+x <- CO.elev
+grd <- as.matrix(CO.loc)
+thesekeep <- !is.na(y)
+y <- y[thesekeep]
+x <- x[thesekeep]
+grd <- grd[thesekeep,]
+rm(thesekeep)
+x <- x/1000 # x originally in meters, convert to km above sea level
+
+## Linear regression: temp~elev+lat+lon+eps
+mod <- lm(y~x+grd) # does both lat/lon
+summary(mod)
+
+z <- mod$resid # estimated residuals, hat(eps)_i = y_i - hat(mu)_i
+quilt.plot(grd,z)
+# Goal: explore / estimate spatial structure of eps
+
+##
+## Empirical variograms: fields package
+##
+
+v <- vgram(loc=grd,y=z,N=30,lon.lat=TRUE)
+# Note
+names(v)
+length(v$vgram)
+choose(length(z),2)
+
+rownames(v$stats)
+
+plot(v$vgram~v$d,ylab="semivariogram",xlab="km")
+lines(v$stats["mean",]~v$centers,col="blue",lwd=2)
+
+breaks <- seq(0,500,by=25)
+
+bplot.xy(v$d,sqrt(v$vgram),breaks=breaks,ylab="sqrt(variogram)")
+lines(sqrt(v$stats["mean",])~v$centers,col="blue",lwd=2)
+
+## Note max distance, and a more traditional looking variogram
+max(v$d)
+v <- vgram(loc=grd,y=z,N=100,lon.lat=TRUE)
+plot(v$stats["N",]~v$centers,main="Number of pairs per bin")
+abline(h=30)
+plot(v$stats["mean",]~v$centers,xlim=c(0,250))
+# Is there evidence of a nugget effect?  If so, how big is it?
+# What's the sill? What's the nugget-to-sill-ratio (i.e., noise to total variance)?
+
+##
+## Empirial variograms: geoR package
+##
+
+# technical difficulty: geoR only accepts projected coordinates
+library(mapproj)
+
+temp <- mapproject(x=grd[,1],y=grd[,2],projection="sinusoidal")
+grd.p <- cbind(temp$x,temp$y)
+rm(temp)
+par(mfrow=c(1,2))
+plot(grd)
+plot(grd.p)
+
+library(geoR)
+
+breaks <- seq(0,max(rdist(grd.p)),length.out=50)
+
+## Classical estimator
+v.c <- variog(coords=grd.p,data=z,estimator.type="classical",op="cloud") # cloud
+v.bc <- variog(coords=grd.p,data=z,estimator.type="classical",breaks=breaks,
+  bin.cloud=TRUE) # binned
+
+par(mfrow=c(1,2))
+plot(v.c,main="variogram cloud",pch=19,cex=0.5)
+plot(v.bc,main="binned",pch=19,cex=0.5)
+
+## Robust estimator
+v.c.r <- variog(coords=grd.p,data=z,estimator.type="modulus",op="cloud") # cloud
+v.bc.r <- variog(coords=grd.p,data=z,estimator.type="modulus",breaks=breaks,
+  bin.cloud=TRUE) # binned
+
+par(mfrow=c(2,2))
+plot(v.c,main="variogram cloud",pch=19,cex=0.5)
+plot(v.bc,main="binned",pch=19,cex=0.5,ylim=c(0,1.4))
+plot(v.c.r,main="variogram cloud (robust)",pch=19,cex=0.5)
+plot(v.bc.r,main="binned (robust)",pch=19,cex=0.5,ylim=c(0,1.4))
+# What's the nugget-to-sill ratio for raw vs. robust?
+
+dev.off()
+
+##
+## Estimating spatial parameters by weighted least squares
+##
+
+?cov.spatial # how does geoR code parameters?
+
+vfit <- variofit(v.bc.r,cov.model="exponential",weights="cressie")
+vfit
+
+plot(v.bc.r)
+lines(vfit)
+
+## Which is right?
+vfit <- variofit(v.bc.r,cov.model="exponential",weights="cressie")
+vfit2 <- variofit(v.bc.r,cov.model="powered.exponential",weights="cressie",
+  nugget=0.3,fix.nugget=TRUE)
+vfit3 <- variofit(v.bc.r,cov.model="matern",weights="cressie",kappa=1)
+vfit4 <- variofit(v.bc.r,cov.model="spherical",weights="cressie")
+
+plot(v.bc.r)
+lines(vfit)
+lines(vfit2,col="blue")
+lines(vfit3,col="red")
+lines(vfit4,col="green")
+
+## Same data, robust vs. classical variogram estimator
+breaks <- seq(0,max(rdist(grd.p)),length.out=50)
+v.bc.r.2 <- variog(coords=grd.p,data=z,estimator.type="classical",breaks=breaks,
+  bin.cloud=TRUE) # binned
+
+vfit <- variofit(v.bc.r,cov.model="exponential",weights="cressie") # robust
+vfit.2 <- variofit(v.bc.r.2,cov.model="exponential",weights="cressie") # classical
+
+plot(v.bc.r.2)
+lines(vfit)
+lines(vfit.2,col="blue")
+
+##
+## Re-estimate mean function by GLS
+##
+
+vfit <- variofit(v.bc.r,cov.model="exponential",weights="cressie")
+tau2 <- vfit$nugget # tau^2
+sigma2 <- vfit$cov.pars[1] # sigma^2
+a <- vfit$cov.pars[2] # a = range as exp(-r/a)
+
+# set up covariance matrix Sigma
+Sigma <- sigma2 * exp(-rdist(grd.p)/a)
+diag(Sigma) <- diag(Sigma) + tau2
+
+X <- cbind(1,x,grd.p) # design matrix of regression
+beta.gls <- solve(t(X) %*% solve(Sigma) %*% X) %*% t(X) %*% solve(Sigma) %*% y
+beta.gls.se <- sqrt(diag(solve(t(X) %*% solve(Sigma) %*% X)))
+
+# compare to LS estimates
+out <- cbind(lm(y~x+grd.p)$coef, beta.gls)
+colnames(out) <- c("OLS","GLS")
+out
+# compare standard errors
+out.se <- cbind(summary(lm(y~x+grd.p))$coef[,2],beta.gls.se)
+colnames(out.se) <- c("OLS SE","GLS SE")
+out.se
+
+##
+## Re-estimate spatial structure
+##
+
+z.gls <- y - X %*% c(beta.gls)
+par(mfrow=c(1,2))
+quilt.plot(grd.p,lm(y~x+grd.p)$resid,main="OLS residuals",zlim=c(-3.2,3.2))
+quilt.plot(grd.p,z.gls,main="GLS residuals",zlim=c(-3.2,3.2))
+
+## old estimate vs. new estimate 
+v.bc.r.gls <- variog(coords=grd.p,data=z.gls,estimator.type="modulus",breaks=breaks,
+  bin.cloud=TRUE) # binned
+vfit.gls <- variofit(v.bc.r.gls,ini.cov.pars=c(sigma2,1),
+  cov.model="matern",weights="cressie",fix.kappa=FALSE)
+
+par(mfrow=c(1,2))
+plot(v.bc.r,main="Initial variogram (OLS resid)")
+lines(vfit)
+
+plot(v.bc.r.gls,main="New variogram (GLS resid)")
+lines(vfit.gls)
+
+spatial.ests <- cbind(c(vfit$nugget,vfit$cov.pars,NA),c(vfit.gls$nugget,vfit.gls$cov.pars,
+  vfit.gls$kappa))
+rownames(spatial.ests) <- c("Nugget","Marginal variance","Range","Smoothness")
+colnames(spatial.ests) <- c("Original","After GLS")
+
+spatial.ests
+# that smoothness
+
+## Estimated nugget-to-sill ratio:
+spatial.ests[1,1] / (spatial.ests[1,1] + spatial.ests[2,1]) # original
+spatial.ests[1,2] / (spatial.ests[1,2] + spatial.ests[2,2]) # after GLS
+

@@ -1,0 +1,677 @@
+---
+title: "UFO Geostatistics"
+author: "Michael Ramsey"
+date: "February 21, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Spatial Statistics of UFO Data 
+
+The National UFO Reporting Center (NUFORC) is an organization in the United States that investigates UFO sightings and/or alien contacts. NUFORC has been in continuous operation since 1974 when it was founded by Robert J. Gribble. It has catalogued almost 90,000 reported UFO sightings over its history, most of which were in the United States. The data analyzed here contains information on 64,506 UFO sightings over the last century. The data contain lon/lat coordinates, state, shape of the UFO, the date and time as well as the duration (in seconds) of the sighting. We will investigate the spatial structure of the dataset. Here is a snapshot of the data.
+
+```{r echo = F, message = F, warning = F}
+# Load tidyverse
+library(tidyverse)
+library(urbnmapr)
+library(gridExtra)
+library(maps)
+library(fields)
+library(geoR)
+library(mapproj)
+library(gridExtra)
+library(cowplot)
+
+# Load workspace
+load("UFO_scrubbed.RData")
+grid.table(head(ufo),rows = NULL)
+
+# Edit the blank cells for shape
+ufo$shape <- sub("^$", "Blank", ufo$shape)
+```
+
+# Data Visualization
+
+#### Sightings by state
+
+We start by displaying a map of the United States where each point represents the geographic location of a ufo sighting. The second U.S. map displays a heat-map by state, where the color of the state represents the number of sightings in that state. Note that this map is slightly misleading, since we large states will naturally have more sightings than smaller ones. I should normalize by state population, however I did not load the data. It seems that the sigtings are concentrated around areas of large population. We points for all of the cities with population over 40,000 in red.
+
+```{r echo = F, message = F, warning = F}
+
+# Count sightings by state
+ufo_state <- ufo %>%
+  group_by(state) %>%
+  summarise(Count = n()) %>%
+  rename(state_abbv = state) %>%
+  mutate(state_abbv = toupper(state_abbv)) 
+
+# Join the data
+urbn <- urbnmapr::states %>%
+  left_join(ufo_state, by = 'state_abbv')
+
+# Get city data
+cities <- us.cities %>%
+  filter(long > -130)
+
+# Map US data with heat of sightings
+ggplot() + 
+  geom_polygon(data = urbn, 
+               aes(x = long, y = lat, group = group),
+		           color = 'grey10', fill = 'white') +
+  coord_map(projection = "albers", lat0 = 39, lat1 = 45) +
+  geom_point(data = ufo, aes(x = longitude, y = latitude), size = .05) +
+  geom_point(data = cities, aes(x = long, y = lat), color = 'red', size = .5) +
+  ylab('Latitude') +
+  xlab('Longitude')
+
+# Map US data with heat of sightings
+ggplot() + 
+  geom_polygon(data = urbn, 
+               aes(x = long, y = lat, group = group, fill = Count),
+		           color = 'black') +
+  coord_map(projection = "albers", lat0 = 39, lat1 = 45) +
+  ylab('Latitude') +
+  xlab('Longitude') +
+  scale_fill_continuous('Sightings') +
+  scale_color_gradient2(low="blue", mid="white",
+                     high="red", space ="Lab" )
+```
+
+The location of 
+
+#### Counts of sightings by shape
+
+```{r echo = F, message = F, warning = F}
+
+# Bar plots of shape
+ggplot(data = ufo, aes(x = shape)) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0)) +
+  ggtitle('Counts of UFOs by shape')
+```
+
+We see that, by far, the most common shape is "light", followed by "triangle", then "circle". There are 29 different shapes recorded.
+
+#### Distriubtion of sighting lengths
+
+Sighting legth was converted to log scale due to the large skewness in the data.
+
+```{r echo = F, message = F, warning = F}
+
+# Remove log-durations that are too large or too small
+ufo <- ufo %>%  
+  filter(duration.seconds > 1) %>%
+  filter(log(duration.seconds) <= 10) %>%
+  mutate(logdur = log(duration.seconds))
+
+# Histogram of duration
+ggplot(data = ufo, aes(x = log(duration.seconds))) + 
+  geom_histogram(bins = 15) + 
+  scale_x_continuous(limits = c(0,8)) +
+  ggtitle('Histogram of log-duration')
+```
+
+I also provide a summary of the duration and log-duration for reference on these values.
+
+```{r echo = F, message = F, warning = F}
+
+# Print summary of duration and log-duartion
+sum1 <- summary(ufo$duration.seconds)
+sum_names <- names(sum1)
+sum1 <- as.vector(sum1)
+sum2 <- as.vector(summary(log(ufo$duration.seconds)))
+sum_data <- data.frame(Statistic = sum_names,
+                       Duration = unname(sum1),
+                       Logduration = unname(sum2))
+grid.table(sum_data, rows = NULL)
+```
+
+# Spatial Modeling
+
+#### Spatial dependence of duration
+
+We start by constructing a heat map for the states.
+
+```{r echo = F, message = F, warning = F}
+
+# LIST OF STATES TO PLOT
+state_list = c('co','mn','ny','wa','ma','fl')
+
+# Extract sightings for states
+state_data <- ufo %>%
+  filter(state %in% state_list)
+
+# Get maps for state
+state_maps <- urbn %>%
+  filter(state_abbv %in% toupper(state_list))
+
+# Map US data with heat of sightings
+state_plots <- list()
+for (i in c(1:length(state_list))) 
+{
+  # Get particular state map
+  temp_map <- state_maps %>%
+    filter(state_abbv == toupper(state_list[i]))
+  
+  # Get state sigtings data
+  temp_data <- state_data %>%
+  filter(state == state_list[i])
+  
+  # Plot the state
+  state_plots[[i]] <- ggplot() + 
+  geom_polygon(data = temp_map, 
+               aes(x = long, y = lat, group = group),
+		           color = 'grey10', fill = 'white') +
+  coord_map(projection = "albers", lat0 = 39, lat1 = 45) +
+  geom_point(data = temp_data, aes(x = longitude, y = latitude,
+                            color = logdur), size = 1)+
+  scale_color_gradientn(name = 'log-duration',
+                        colours = c("darkblue","lightblue","green","yellow","red")) +
+  guides(color = F) +
+  labs(x=NULL, y=NULL) +
+  theme(plot.margin=unit(c(0,0,0,0),"mm"))
+}
+
+# Plot the states
+grid.arrange(state_plots[[1]], state_plots[[2]],
+             state_plots[[3]], state_plots[[4]],
+             state_plots[[5]], state_plots[[6]], ncol = 2)
+
+```
+
+#### Fields package
+
+Using the fields package, we get the following plot.
+
+```{r echo = F, message = F, warning = F}
+
+# Map US data with heat of sightings
+par(mfrow=c(3,2),
+    mar = c(2,2,1,1),
+    xpd = NA)
+
+for (i in c(1:length(state_list))) 
+{
+  # Get state sigtings data
+  temp_data <- state_data %>%
+  filter(state == state_list[i])
+  
+  # Plot state with the fields package
+  quilt.plot(x = temp_data$longitude,
+             y = temp_data$latitude,
+             z = temp_data$logdur,
+             main = toupper(state_list[i]))
+}
+
+```
+
+We can see clumps of colors in both plots. This tells us we have evidence of spatial correalation in the data.
+
+# Binned semicovariogram of log-duration for NY
+
+#### Fields package
+
+```{r echo = F, message = F, warning = F}
+
+# Get data for ny
+ny <- ufo %>%
+  filter(state == 'ny')
+
+# Create a semicovariogram for ny data
+grd <- as.matrix(cbind(ny$longitude,ny$latitude))
+v <- vgram(loc=grd,y=ny$logdur,N=100,lon.lat=TRUE)
+
+# Create data frame of values
+ny_v <- data.frame(Distance = v$d,
+                   Value = sqrt(v$vgram))
+
+# Add bins 
+breaks <- seq(0,round(.98*max(v$d)/2),length.out = 100)
+ny_v <- ny_v %>%
+  mutate(bin = cut(Distance, breaks = breaks))
+
+# Get statistics for summary        
+ny_vstats <- data.frame(Centers = v$centers,
+                        Mean = v$stats["mean",],
+                        Med = v$stats["median",],
+                        N = v$stats["N",])
+
+# Filter out first half of esimates
+ny_vstats <- ny_vstats %>%
+  filter(Centers <= round(.98*max(v$d)/2))
+
+```
+
+```{r echo = F, message = F, warning = F}
+
+# Create binned boxplot of the covariogram points
+ggplot(data = ny_v, aes(x = as.factor(bin), y = Value)) +
+  geom_boxplot() + 
+  xlab('Distance Bin') +
+  ylab('sqrt(Variogram)') + 
+  scale_x_discrete(labels = round(breaks)) +
+  ggtitle('Binned Covariogram Boxplot - 100 bins') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0)) +
+  stat_summary(fun.y=mean, geom="point", color = 'red')
+```
+
+
+```{r echo = F, message = F, warning = F}
+
+# Plot the number of points per bin
+ggplot(data = ny_vstats, aes(x = Centers, y = N)) +
+  geom_point(color = 'blue') +
+  xlab('Distance') +
+  ylab('Count') +
+  ggtitle('Number of points per bin') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0))
+```
+
+```{r echo = F, message = F, warning = F}
+
+# Plot the variogram
+ggplot(data = ny_vstats, aes(x = Centers, y = Mean)) +
+  geom_point(color = 'blue') +
+  xlab('Distance') +
+  ylab('semivariance') +
+  ggtitle('Binned semi-covariogram estimate') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0)) +
+  scale_x_continuous(limits = c(0, 150)) +
+  geom_smooth(se = T, color = 'red')
+```
+
+There does not appear to be much spatial correlation in the data.
+
+#### geoR package
+
+```{r echo = F, message = F, warning = F}
+
+# Technical difficulty: geoR only accepts projected coordinates
+# Project coordinates
+temp <- mapproject(x=grd[,1],y=grd[,2],projection="sinusoidal")
+grd.p <- cbind(temp$x,temp$y)
+rm(temp)
+
+# Plot original vs. projected coordinates
+par(mfrow=c(1,2))
+plot(grd, main = 'Original', xlab = 'lon', ylab = 'lat')
+plot(grd.p, main = 'Projected', xlab = 'proj1', ylab = 'proj2')
+
+# Create breaks
+breaks <- seq(0,max(rdist(grd.p)),length.out=500)
+
+# Estimate the variogram classicly
+v.c <- variog(coords = grd.p,
+              data = ny$logdur, 
+              estimator.type = "classical",
+              op= "cloud") #cloud
+
+# Estimate the variogram classicly via bins
+v.bc <- variog(coords=grd.p,
+               data=ny$logdur,
+               estimator.type="classical",
+               breaks=breaks,
+               bin.cloud=TRUE) #binned
+
+# Estimate the variogram robustsly
+v.c.r <- variog(coords=grd.p,
+                data=ny$logdur,
+                estimator.type="modulus",
+                op="cloud") #cloud
+
+# Estimate the variogram robustsly via bins
+v.bc.r <- variog(coords=grd.p,
+                 data=ny$logdur,
+                 estimator.type="modulus",
+                 breaks=breaks,
+                 bin.cloud=TRUE) #binned
+
+# Compare classic vs. robust estimator
+par(mfrow=c(1,2))
+plot(v.bc,main="Classical-bin",pch=19,cex=0.5)
+plot(v.bc.r,main="Robust-bin",pch=19,cex=0.5)
+
+# We only car about the first half of the data
+par(mfrow=c(1,2))
+plot(v.bc, main="Classical-bin", pch=19, cex=0.5, 
+     xlim = c(0,.08), ylim = c(3,5.5))
+plot(v.bc.r, main="Robust-bin", pch=19, cex=0.5,
+     xlim = c(0,.08), ylim = c(3,5.5))
+```
+
+#### Fitting a positive-definite functions
+
+```{r echo = TRUE, message = F, warning = F}
+
+# Fit several variograms
+vfit1 <- variofit(v.bc.r,cov.model="exponential",weights="cressie")
+vfit2 <- variofit(v.bc.r,cov.model="powered.exponential",weights="cressie",
+                  nugget=0.3,fix.nugget=TRUE)
+vfit3 <- variofit(v.bc.r,cov.model="matern",weights="cressie",kappa=1)
+vfit4 <- variofit(v.bc.r,cov.model="spherical",weights="cressie")
+
+# Plot the variogram
+plot(v.bc.r)
+lines(vfit1)
+lines(vfit2,col="blue")
+lines(vfit3,col="red")
+lines(vfit4,col="green")
+
+```
+
+# Binned semicovariogram of log-duration for other state
+
+#### Fields package
+
+```{r echo = F, message = F, warning = F}
+
+# Get data for ny
+ny <- ufo %>%
+  filter(state == 'ma')
+
+# Create a semicovariogram for ny data
+grd <- as.matrix(cbind(ny$longitude,ny$latitude))
+v <- vgram(loc=grd,y=ny$logdur,N=100,lon.lat=TRUE)
+
+# Create data frame of values
+ny_v <- data.frame(Distance = v$d,
+                   Value = sqrt(v$vgram))
+
+# Add bins 
+breaks <- seq(0,round(.98*max(v$d)/2),length.out = 100)
+ny_v <- ny_v %>%
+  mutate(bin = cut(Distance, breaks = breaks))
+
+# Get statistics for summary        
+ny_vstats <- data.frame(Centers = v$centers,
+                        Mean = v$stats["mean",],
+                        Med = v$stats["median",],
+                        N = v$stats["N",])
+
+# Filter out first half of esimates
+ny_vstats <- ny_vstats %>%
+  filter(Centers <= round(.98*max(v$d)/2))
+
+```
+
+```{r echo = F, message = F, warning = F}
+
+# Create binned boxplot of the covariogram points
+ggplot(data = ny_v, aes(x = as.factor(bin), y = Value)) +
+  geom_boxplot() + 
+  xlab('Distance Bin') +
+  ylab('sqrt(Variogram)') + 
+  scale_x_discrete(labels = round(breaks)) +
+  ggtitle('Binned Covariogram Boxplot') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0)) +
+  stat_summary(fun.y=mean, geom="point", color = 'red')
+```
+
+
+```{r echo = F, message = F, warning = F}
+
+# Plot the number of points per bin
+ggplot(data = ny_vstats, aes(x = Centers, y = N)) +
+  geom_point(color = 'blue') +
+  xlab('Distance') +
+  ylab('Count') +
+  ggtitle('Number of points per bin') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0))
+```
+
+```{r echo = F, message = F, warning = F}
+
+# Plot the variogram
+ggplot(data = ny_vstats, aes(x = Centers, y = Mean)) +
+  geom_point(color = 'blue') +
+  xlab('Distance') +
+  ylab('semivariance') +
+  ggtitle('Binned semi-covariogram estimate') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0)) +
+  scale_x_continuous(limits = c(0, 150)) +
+  geom_smooth(method = 'lm', se = F, color = 'red')
+```
+
+There does not appear to be much spatial correlation in the data.
+
+#### geoR package
+
+```{r echo = F, message = F, warning = F}
+
+# Technical difficulty: geoR only accepts projected coordinates
+# Project coordinates
+temp <- mapproject(x=grd[,1],y=grd[,2],projection="sinusoidal")
+grd.p <- cbind(temp$x,temp$y)
+rm(temp)
+
+# Plot original vs. projected coordinates
+par(mfrow=c(1,2))
+plot(grd, main = 'Original', xlab = 'lon', ylab = 'lat')
+plot(grd.p, main = 'Projected', xlab = 'proj1', ylab = 'proj2')
+
+# Create breaks
+breaks <- seq(0,max(rdist(grd.p)),length.out=500)
+
+# Estimate the variogram classicly
+v.c <- variog(coords = grd.p,
+              data = ny$logdur, 
+              estimator.type = "classical",
+              op= "cloud") #cloud
+
+# Estimate the variogram classicly via bins
+v.bc <- variog(coords=grd.p,
+               data=ny$logdur,
+               estimator.type="classical",
+               breaks=breaks,
+               bin.cloud=TRUE) #binned
+
+# Estimate the variogram robustsly
+v.c.r <- variog(coords=grd.p,
+                data=ny$logdur,
+                estimator.type="modulus",
+                op="cloud") #cloud
+
+# Estimate the variogram robustsly via bins
+v.bc.r <- variog(coords=grd.p,
+                 data=ny$logdur,
+                 estimator.type="modulus",
+                 breaks=breaks,
+                 bin.cloud=TRUE) #binned
+
+# Compare classic vs. robust estimator
+par(mfrow=c(1,2))
+plot(v.bc,main="Classical-bin",pch=19,cex=0.5)
+plot(v.bc.r,main="Robust-bin",pch=19,cex=0.5)
+
+# We only car about the first half of the data
+par(mfrow=c(1,2))
+plot(v.bc, main="Classical-bin", pch=19, cex=0.5, 
+     xlim = c(0,.03), ylim = c(3,5))
+plot(v.bc.r, main="Robust-bin", pch=19, cex=0.5,
+     xlim = c(0,.03), ylim = c(3,5))
+```
+
+Not sure if this is a lack of sample conclusion
+
+#### Fitting a positive-definite function
+
+```{r echo = TRUE, message = F, warning = F}
+
+# Fit several variograms
+vfit <- variofit(v.bc.r,cov.model="exponential",weights="cressie")
+vfit2 <- variofit(v.bc.r,cov.model="powered.exponential",weights="cressie",
+  nugget=0.3,fix.nugget=TRUE)
+vfit3 <- variofit(v.bc.r,cov.model="matern",weights="cressie",kappa=1)
+vfit4 <- variofit(v.bc.r,cov.model="spherical",weights="cressie")
+
+plot(v.bc.r, xlim = c(0,.03), ylim = c(3,5))
+lines(vfit)
+lines(vfit2,col="blue")
+lines(vfit3,col="red")
+lines(vfit4,col="green")
+```
+
+# Binned semicovariogram of log-duration for Arizona
+
+#### Fields package
+
+```{r echo = F, message = F, warning = F}
+
+# Get data for ny
+ny <- ufo %>%
+  filter(state == 'az')
+
+# Create a semicovariogram for ny data
+grd <- as.matrix(cbind(ny$longitude,ny$latitude))
+v <- vgram(loc=grd,y=ny$logdur,N=100,lon.lat=TRUE)
+
+# Create data frame of values
+ny_v <- data.frame(Distance = v$d,
+                   Value = sqrt(v$vgram))
+
+# Add bins 
+breaks <- seq(0,round(.98*max(v$d)/2),length.out = 100)
+ny_v <- ny_v %>%
+  mutate(bin = cut(Distance, breaks = breaks))
+
+# Get statistics for summary        
+ny_vstats <- data.frame(Centers = v$centers,
+                        Mean = v$stats["mean",],
+                        Med = v$stats["median",],
+                        N = v$stats["N",])
+
+# Filter out first half of esimates
+ny_vstats <- ny_vstats %>%
+  filter(Centers <= round(.98*max(v$d)/2))
+
+```
+
+```{r echo = F, message = F, warning = F}
+
+# Create binned boxplot of the covariogram points
+ggplot(data = ny_v, aes(x = as.factor(bin), y = Value)) +
+  geom_boxplot() + 
+  xlab('Distance Bin') +
+  ylab('sqrt(Variogram)') + 
+  scale_x_discrete(labels = round(breaks)) +
+  ggtitle('Binned Covariogram Boxplot') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0)) +
+  stat_summary(fun.y=mean, geom="point", color = 'red')
+```
+
+
+```{r echo = F, message = F, warning = F}
+
+# Plot the number of points per bin
+ggplot(data = ny_vstats, aes(x = Centers, y = N)) +
+  geom_point(color = 'blue') +
+  xlab('Distance') +
+  ylab('Count') +
+  ggtitle('Number of points per bin') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0))
+```
+
+```{r echo = F, message = F, warning = F}
+
+# Plot the variogram
+ggplot(data = ny_vstats, aes(x = Centers, y = Mean)) +
+  geom_point(color = 'blue') +
+  xlab('Distance') +
+  ylab('semivariance') +
+  ggtitle('Binned semi-covariogram estimate') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0)) +
+  scale_x_continuous(limits = c(0, 150)) +
+  geom_smooth(method = 'lm', se = F, color = 'red')
+```
+
+There does not appear to be much spatial correlation in the data.
+
+#### geoR package
+
+```{r echo = F, message = F, warning = F}
+
+# Technical difficulty: geoR only accepts projected coordinates
+# Project coordinates
+temp <- mapproject(x=grd[,1],y=grd[,2],projection="sinusoidal")
+grd.p <- cbind(temp$x,temp$y)
+rm(temp)
+
+# Plot original vs. projected coordinates
+par(mfrow=c(1,2))
+plot(grd, main = 'Original', xlab = 'lon', ylab = 'lat')
+plot(grd.p, main = 'Projected', xlab = 'proj1', ylab = 'proj2')
+
+# Create breaks
+breaks <- seq(0,max(rdist(grd.p)),length.out=500)
+
+# Estimate the variogram classicly
+v.c <- variog(coords = grd.p,
+              data = ny$logdur, 
+              estimator.type = "classical",
+              op= "cloud") #cloud
+
+# Estimate the variogram classicly via bins
+v.bc <- variog(coords=grd.p,
+               data=ny$logdur,
+               estimator.type="classical",
+               breaks=breaks,
+               bin.cloud=TRUE) #binned
+
+# Estimate the variogram robustsly
+v.c.r <- variog(coords=grd.p,
+                data=ny$logdur,
+                estimator.type="modulus",
+                op="cloud") #cloud
+
+# Estimate the variogram robustsly via bins
+v.bc.r <- variog(coords=grd.p,
+                 data=ny$logdur,
+                 estimator.type="modulus",
+                 breaks=breaks,
+                 bin.cloud=TRUE) #binned
+
+# Compare classic vs. robust estimator
+par(mfrow=c(1,2))
+plot(v.bc,main="Classical-bin",pch=19,cex=0.5)
+plot(v.bc.r,main="Robust-bin",pch=19,cex=0.5)
+
+# We only car about the first half of the data
+par(mfrow=c(1,2))
+plot(v.bc, main="Classical-bin", pch=19, cex=0.5, 
+     xlim = c(0,.04), ylim = c(3.5,5))
+plot(v.bc.r, main="Robust-bin", pch=19, cex=0.5,
+     xlim = c(0,.04), ylim = c(3,5.5))
+```
+
+#### Fitting a positive-definite functions
+
+```{r echo = TRUE, message = F, warning = F}
+
+# Fit several variograms
+vfit1 <- variofit(v.bc.r,cov.model="exponential",weights="cressie")
+vfit2 <- variofit(v.bc.r,cov.model="powered.exponential",weights="cressie",
+                  nugget=0.3,fix.nugget=TRUE)
+vfit3 <- variofit(v.bc.r,cov.model="matern",weights="cressie",kappa=1)
+vfit4 <- variofit(v.bc.r,cov.model="spherical",weights="cressie")
+
+# Plot the variogram
+plot(v.bc.r, xlim = c(0,.04), ylim = c(3.5,5))
+lines(vfit1)
+lines(vfit2,col="blue")
+lines(vfit3,col="red")
+lines(vfit4,col="green")
+
+```
+
+# Strongest State Spatial Dependence
+
+# Best Location for UFO Sighting
+
+```{r echo = TRUE, message = F, warning = F}
+```
+
+```{r echo = TRUE, message = F, warning = F}
+```
