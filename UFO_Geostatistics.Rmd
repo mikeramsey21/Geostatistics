@@ -35,9 +35,9 @@ ufo$shape <- sub("^$", "Blank", ufo$shape)
 
 # Data Visualization
 
-#### Sightings by state
+### Sightings by state
 
-We start by displaying a map of the United States where each point represents the geographic location of a ufo sighting. The second U.S. map displays a heat-map by state, where the color of the state represents the number of sightings in that state. Note that this map is slightly misleading, since we large states will naturally have more sightings than smaller ones. I should normalize by state population, however I did not load the data. It seems that the sigtings are concentrated around areas of large population. We points for all of the cities with population over 40,000 in red.
+We start by displaying a map of the United States where each point represents the geographic location of a ufo sighting. The second U.S. map displays a heat-map by state, where the color of the state represents the number of sightings in that state. Note that this map is slightly misleading, since will large states will naturally have more sightings than smaller ones. I should normalize by state population, however I did not attempt to find population data. It seems that the sightings are concentrated around areas of large population. I add points for all cities with population over 40,000 in red.
 
 ```{r echo = F, message = F, warning = F}
 
@@ -80,9 +80,7 @@ ggplot() +
                      high="red", space ="Lab" )
 ```
 
-The location of 
-
-#### Counts of sightings by shape
+### Counts of sightings by shape
 
 ```{r echo = F, message = F, warning = F}
 
@@ -95,9 +93,9 @@ ggplot(data = ufo, aes(x = shape)) +
 
 We see that, by far, the most common shape is "light", followed by "triangle", then "circle". There are 29 different shapes recorded.
 
-#### Distriubtion of sighting lengths
+### Distriubtion of sighting lengths
 
-Sighting legth was converted to log scale due to the large skewness in the data.
+Sighting length was converted to log scale due to the large skewness in the data.
 
 ```{r echo = F, message = F, warning = F}
 
@@ -131,9 +129,9 @@ grid.table(sum_data, rows = NULL)
 
 # Spatial Modeling
 
-#### Spatial dependence of duration
+### Spatial dependence of duration
 
-We start by constructing a heat map for the states.
+For several states, I construct a heat map for the log-duration of the sighting at each sighting location. In other words, points on the following plot represent sighting geographic location, and color represent the duration of the sighting in log scale.
 
 ```{r echo = F, message = F, warning = F}
 
@@ -167,12 +165,12 @@ for (i in c(1:length(state_list)))
 		           color = 'grey10', fill = 'white') +
   coord_map(projection = "albers", lat0 = 39, lat1 = 45) +
   geom_point(data = temp_data, aes(x = longitude, y = latitude,
-                            color = logdur), size = 1)+
-  scale_color_gradientn(name = 'log-duration',
+                            color = logdur), size = .5)+
+  scale_color_gradientn(name = element_blank(),
                         colours = c("darkblue","lightblue","green","yellow","red")) +
-  guides(color = F) +
   labs(x=NULL, y=NULL) +
-  theme(plot.margin=unit(c(0,0,0,0),"mm"))
+  theme(plot.margin=unit(c(0,0,0,0),"mm")) +
+  ggtitle(toupper(state_list[i]))
 }
 
 # Plot the states
@@ -182,9 +180,11 @@ grid.arrange(state_plots[[1]], state_plots[[2]],
 
 ```
 
-#### Fields package
+It appears there may be spatial correlation in the data. There appears to be clumps of green in several states, however we know color can be misleading. I will also produce a heat map using the fields package to add another visual reference.
 
-Using the fields package, we get the following plot.
+### Fields package
+
+Using the fields package, we get the following plots.
 
 ```{r echo = F, message = F, warning = F}
 
@@ -204,15 +204,20 @@ for (i in c(1:length(state_list)))
              y = temp_data$latitude,
              z = temp_data$logdur,
              main = toupper(state_list[i]))
+  US(add = T)
 }
 
 ```
 
-We can see clumps of colors in both plots. This tells us we have evidence of spatial correalation in the data.
+We can still see some clumps of colors. This tells us that spatial correlation may be present in the data. Now let's attempt to further visualize and model the covariance structrues in a subset of states. I choose New York (NY), Massachusettes (MA), and Arizona (AZ). 
 
 # Binned semicovariogram of log-duration for NY
 
-#### Fields package
+I will model correlations using two packages: fields and geor.
+
+### Fields package
+
+I construct a binned semicoariogram for log-duration using the vgram function in the fields package. In the following plot, I display a scatter plot for the number of data points per bin.
 
 ```{r echo = F, message = F, warning = F}
 
@@ -245,7 +250,7 @@ ny_vstats <- ny_vstats %>%
 
 ```
 
-```{r echo = F, message = F, warning = F}
+```{r echo = F, message = F, warning = F, eval = F}
 
 # Create binned boxplot of the covariogram points
 ggplot(data = ny_v, aes(x = as.factor(bin), y = Value)) +
@@ -258,7 +263,6 @@ ggplot(data = ny_v, aes(x = as.factor(bin), y = Value)) +
   stat_summary(fun.y=mean, geom="point", color = 'red')
 ```
 
-
 ```{r echo = F, message = F, warning = F}
 
 # Plot the number of points per bin
@@ -270,22 +274,65 @@ ggplot(data = ny_vstats, aes(x = Centers, y = N)) +
   theme(axis.text.x = element_text(angle = 90, vjust = 0))
 ```
 
+We see that there are a ton of distances within the first bin of the semi-covariogram. We may be averaging over too many points, and thus unable to see if there is spatial dependence at small distances. We try this again, but increasing the number of bins to 300.
+
+```{r echo = F, message = F, warning = F}
+
+# Create a semicovariogram for ny data
+v2 <- vgram(loc=grd,y=ny$logdur,N=300,lon.lat=TRUE)
+
+# Create data frame of values
+ny_v2 <- data.frame(Distance = v2$d,
+                   Value = sqrt(v2$vgram))
+
+# Add bins 
+breaks2 <- seq(0,round(.98*max(v2$d)/2),length.out = 100)
+ny_v2 <- ny_v2 %>%
+  mutate(bin = cut(Distance, breaks = breaks2))
+
+# Get statistics for summary        
+ny_vstats2 <- data.frame(Centers = v2$centers,
+                        Mean = v2$stats["mean",],
+                        Med = v2$stats["median",],
+                        N = v2$stats["N",])
+
+# Filter out first half of esimates
+ny_vstats2 <- ny_vstats2 %>%
+  filter(Centers <= round(.98*max(v$d)/2))
+```
+
+```{r echo = F, message = F, warning = F}
+
+# Plot the number of points per bin
+ggplot(data = ny_vstats2, aes(x = Centers, y = N)) +
+  geom_point(color = 'blue') +
+  xlab('Distance') +
+  ylab('Count') +
+  ggtitle('Number of points per bin') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0))
+```
+
+Now we finally plot the binned semi-covariogram.
+
 ```{r echo = F, message = F, warning = F}
 
 # Plot the variogram
-ggplot(data = ny_vstats, aes(x = Centers, y = Mean)) +
+ggplot(data = ny_vstats2, aes(x = Centers, y = Mean)) +
   geom_point(color = 'blue') +
   xlab('Distance') +
   ylab('semivariance') +
   ggtitle('Binned semi-covariogram estimate') +
   theme(axis.text.x = element_text(angle = 90, vjust = 0)) +
   scale_x_continuous(limits = c(0, 150)) +
+  scale_y_continuous(limits = c(0,5)) +
   geom_smooth(se = T, color = 'red')
 ```
 
-There does not appear to be much spatial correlation in the data.
+There does not appear to be any spatial correlation in the data.
 
-#### geoR package
+### geoR package
+
+We now do the same thing using the geor package. We note a technical difficulty here: geoR only accepts projected coordinates, so we lose some interpretability here. I display a plot of the original vs. projected coordinates for your reference. I also estimate variograms using two methods, classical binning and robust binning. I display both results, but I ultimately used the robust binning when I move on to parameter estimation of covariance functions.
 
 ```{r echo = F, message = F, warning = F}
 
@@ -342,33 +389,104 @@ plot(v.bc.r, main="Robust-bin", pch=19, cex=0.5,
      xlim = c(0,.08), ylim = c(3,5.5))
 ```
 
-#### Fitting a positive-definite functions
+Again, we do not see any spatial correlation in the data. 
 
-```{r echo = TRUE, message = F, warning = F}
+### Fitting Covariance Functions
+
+I fit several different covariance functions to the data. It's difficult to determine an optimal function in terms of best fit. This is due to the noisyness of the data.
+
+```{r echo = F, message = F, warning = F}
 
 # Fit several variograms
 vfit1 <- variofit(v.bc.r,cov.model="exponential",weights="cressie")
 vfit2 <- variofit(v.bc.r,cov.model="powered.exponential",weights="cressie",
-                  nugget=0.3,fix.nugget=TRUE)
+                  fix.nugget=F)
 vfit3 <- variofit(v.bc.r,cov.model="matern",weights="cressie",kappa=1)
 vfit4 <- variofit(v.bc.r,cov.model="spherical",weights="cressie")
+vfit5 <- variofit(v.bc.r,cov.model="pure.nugget",weights="cressie")
 
 # Plot the variogram
-plot(v.bc.r)
-lines(vfit1)
+plot(v.bc.r, ylim = c(3,5))
+lines(vfit1,col="black")
 lines(vfit2,col="blue")
 lines(vfit3,col="red")
 lines(vfit4,col="green")
+lines(vfit5,col="purple")
+legend("bottomright",
+       legend=c("Exponential", "Powered Exponential", "Matern", "Spherecial","Pure Nugget"),
+       col=c("black", "blue", "red", "green", "purple"),
+       lty=1, cex=0.8)
+```
+
+### WLS Prediciton
+
+I arbitrarily choose the exponential covariance model to estimate model parameters via weighted least squares. Our predictors are longitude and latitude. I display a table of the parameter estimates and the standard errors. 
+
+```{r echo = TRUE, message = F, warning = F}
+
+# We use the exponential covariance model
+vfit <- variofit(v.bc.r,cov.model="exponential",weights="cressie")
+
+# Extract nugget effect
+tau2 <- vfit$nugget # tau^2
+
+# Extract covariance function parameters
+sigma2 <- vfit$cov.pars[1] # sigma^2
+a <- vfit$cov.pars[2] # a = range as exp(-r/a)
+
+# Set up covariance matrix Sigma - for exponential model
+Sigma <- sigma2 * exp(-rdist(grd.p)/a)
+diag(Sigma) <- diag(Sigma) + tau2 # Add nugget
+
+# Construct regression matrix
+X <- cbind(1,grd.p)
+
+# Solve WLS
+beta.gls <- solve(t(X) %*% solve(Sigma) %*% X) %*% t(X) %*% solve(Sigma) %*% ny$logdur
+
+# Compute standard errors
+beta.gls.se <- sqrt(diag(solve(t(X) %*% solve(Sigma) %*% X)))
+
+# Put coefficients and intercept in a table
+wmod <- data.frame(Coefficient = c('Int','Long','Lat'),
+                   Estimate = beta.gls,
+                   Error = beta.gls.se)
+
+# Display the results
+grid.table(wmod,rows = NULL)
 
 ```
 
-# Binned semicovariogram of log-duration for other state
+### OLS Prediction
 
-#### Fields package
+I also compute model parameters using ordinary least squares for comparison. With this model, we assume that there is no spatial correlation in the data. This corresponds to the "pure nugget" covariance model.
+
+```{r echo = TRUE, message = F, warning = F}
+
+# Create linear model
+mylm <- lm(ny$logdur~grd.p)
+
+# Put coefficients and intercept in a table
+lmod <- data.frame(Coefficient = c('Int','Long','Lat'),
+                   Estimate = unname(summary(mylm)$coef[,2]),
+                   Error = unname(summary(mylm)$coef[,3]))
+
+# Display the results
+grid.table(lmod,rows = NULL)
+
+```
+
+# Binned semicovariogram of log-duration for Massachusettes
+
+I will model correlations using two packages: fields and geor.
+
+### Fields package
+
+I construct a binned semicoariogram for log-duration using the vgram function in the fields package. In the following plot, I display a scatter plot for the number of data points per bin.
 
 ```{r echo = F, message = F, warning = F}
 
-# Get data for ny
+# Get data for ma
 ny <- ufo %>%
   filter(state == 'ma')
 
@@ -397,7 +515,7 @@ ny_vstats <- ny_vstats %>%
 
 ```
 
-```{r echo = F, message = F, warning = F}
+```{r echo = F, message = F, warning = F, eval = F}
 
 # Create binned boxplot of the covariogram points
 ggplot(data = ny_v, aes(x = as.factor(bin), y = Value)) +
@@ -405,11 +523,10 @@ ggplot(data = ny_v, aes(x = as.factor(bin), y = Value)) +
   xlab('Distance Bin') +
   ylab('sqrt(Variogram)') + 
   scale_x_discrete(labels = round(breaks)) +
-  ggtitle('Binned Covariogram Boxplot') +
+  ggtitle('Binned Covariogram Boxplot - 100 bins') +
   theme(axis.text.x = element_text(angle = 90, vjust = 0)) +
   stat_summary(fun.y=mean, geom="point", color = 'red')
 ```
-
 
 ```{r echo = F, message = F, warning = F}
 
@@ -422,22 +539,65 @@ ggplot(data = ny_vstats, aes(x = Centers, y = N)) +
   theme(axis.text.x = element_text(angle = 90, vjust = 0))
 ```
 
+We see that there are a ton of distances within the first bin of the variogram. We may be averaging over too many points, and thus unable to see if there is spatial dependence at small distances. We try this again, but increasing the number of bins to 300.
+
+```{r echo = F, message = F, warning = F}
+
+# Create a semicovariogram for ny data
+v2 <- vgram(loc=grd,y=ny$logdur,N=300,lon.lat=TRUE)
+
+# Create data frame of values
+ny_v2 <- data.frame(Distance = v2$d,
+                   Value = sqrt(v2$vgram))
+
+# Add bins 
+breaks2 <- seq(0,round(.98*max(v2$d)/2),length.out = 100)
+ny_v2 <- ny_v2 %>%
+  mutate(bin = cut(Distance, breaks = breaks2))
+
+# Get statistics for summary        
+ny_vstats2 <- data.frame(Centers = v2$centers,
+                        Mean = v2$stats["mean",],
+                        Med = v2$stats["median",],
+                        N = v2$stats["N",])
+
+# Filter out first half of esimates
+ny_vstats2 <- ny_vstats2 %>%
+  filter(Centers <= round(.98*max(v$d)/2))
+```
+
+```{r echo = F, message = F, warning = F}
+
+# Plot the number of points per bin
+ggplot(data = ny_vstats2, aes(x = Centers, y = N)) +
+  geom_point(color = 'blue') +
+  xlab('Distance') +
+  ylab('Count') +
+  ggtitle('Number of points per bin') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0))
+```
+
+Now we finally plot the binned semi-covariogram.
+
 ```{r echo = F, message = F, warning = F}
 
 # Plot the variogram
-ggplot(data = ny_vstats, aes(x = Centers, y = Mean)) +
+ggplot(data = ny_vstats2, aes(x = Centers, y = Mean)) +
   geom_point(color = 'blue') +
   xlab('Distance') +
   ylab('semivariance') +
   ggtitle('Binned semi-covariogram estimate') +
   theme(axis.text.x = element_text(angle = 90, vjust = 0)) +
-  scale_x_continuous(limits = c(0, 150)) +
-  geom_smooth(method = 'lm', se = F, color = 'red')
+  scale_x_continuous(limits = c(0, 50)) +
+  scale_y_continuous(limits = c(0,5)) +
+  geom_smooth(se = T, color = 'red')
 ```
 
-There does not appear to be much spatial correlation in the data.
+There does not appear to be any spatial correlation in the data.
 
-#### geoR package
+### geoR package
+
+We now do the same thing using the geor package. We note a technical difficulty here: geoR only accepts projected coordinates, so we lose some interpretability here. I display a plot of the original vs. projected coordinates for your reference. I also estimate variograms using two methods, classical binning and robust binning. I display both results, but I ultimately used the robust binning when I move on to parameter estimation of covariance functions.
 
 ```{r echo = F, message = F, warning = F}
 
@@ -494,33 +654,101 @@ plot(v.bc.r, main="Robust-bin", pch=19, cex=0.5,
      xlim = c(0,.03), ylim = c(3,5))
 ```
 
-Not sure if this is a lack of sample conclusion
+### Fitting Covariance Functions
 
-#### Fitting a positive-definite function
+I fit several different covariance functions to the data. It's difficult to determine an optimal function in terms of best fit. This is due to the noisyness of the data.
 
-```{r echo = TRUE, message = F, warning = F}
+```{r echo = F, message = F, warning = F}
 
 # Fit several variograms
-vfit <- variofit(v.bc.r,cov.model="exponential",weights="cressie")
-vfit2 <- variofit(v.bc.r,cov.model="powered.exponential",weights="cressie",
-  nugget=0.3,fix.nugget=TRUE)
+vfit1 <- variofit(v.bc.r,cov.model="exponential",weights="cressie")
+vfit2 <- variofit(v.bc.r,cov.model="powered.exponential",weights="cressie", fix.nugget=F)
 vfit3 <- variofit(v.bc.r,cov.model="matern",weights="cressie",kappa=1)
 vfit4 <- variofit(v.bc.r,cov.model="spherical",weights="cressie")
+vfit5 <- variofit(v.bc.r,cov.model="pure.nugget",weights="cressie")
 
-plot(v.bc.r, xlim = c(0,.03), ylim = c(3,5))
-lines(vfit)
+# Plot the variogram
+plot(v.bc.r, ylim = c(3.5,4.5))
+lines(vfit1,col="black")
 lines(vfit2,col="blue")
 lines(vfit3,col="red")
 lines(vfit4,col="green")
+lines(vfit5,col="purple")
+legend("bottomright",
+       legend=c("Exponential", "Powered Exponential", "Matern", "Spherecial","Pure Nugget"),
+       col=c("black", "blue", "red", "green", "purple"),
+       lty=1, cex=0.8)
+```
+
+### WLS Prediciton
+
+I arbitrarily choose the powered exponential covariance model to estimate model parameters via weighted least squares. Our predictors are longitude and latitude. I display a table of the parameter estimates and the standard errors. 
+
+```{r echo = F, message = F, warning = F}
+
+# We use the exponential covariance model
+vfit <- variofit(v.bc.r,cov.model="powered.exponential",weights="cressie")
+
+# Extract nugget effect
+tau2 <- vfit$nugget # tau^2
+
+# Extract covariance function parameters
+sigma2 <- vfit$cov.pars[1] # sigma^2
+a <- vfit$cov.pars[2] # a = range as exp(-r/a)
+
+# Set up covariance matrix Sigma - for exponential model
+Sigma <- sigma2 * exp(-(rdist(grd.p)/a)^(.5))
+diag(Sigma) <- diag(Sigma) + tau2 # Add nugget
+
+# Construct regression matrix
+X <- cbind(1,grd.p)
+
+# Solve WLS
+beta.gls <- solve(t(X) %*% solve(Sigma) %*% X) %*% t(X) %*% solve(Sigma) %*% ny$logdur
+
+# Compute standard errors
+beta.gls.se <- sqrt(diag(solve(t(X) %*% solve(Sigma) %*% X)))
+
+# Put coefficients and intercept in a table
+wmod <- data.frame(Coefficient = c('Int','Long','Lat'),
+                   Estimate = beta.gls,
+                   Error = beta.gls.se)
+
+# Display the results
+grid.table(wmod,rows = NULL)
+
+```
+
+### OLS Prediction
+
+I also compute model parameters using ordinary least squares for comparison. With this model, we assume that there is no spatial correlation in the data. This corresponds to the "pure nugget" covariance model.
+
+```{r echo = F, message = F, warning = F}
+
+# Create linear model
+mylm <- lm(ny$logdur~grd.p)
+
+# Put coefficients and intercept in a table
+lmod <- data.frame(Coefficient = c('Int','Long','Lat'),
+                   Estimate = unname(summary(mylm)$coef[,2]),
+                   Error = unname(summary(mylm)$coef[,3]))
+
+# Display the results
+grid.table(lmod,rows = NULL)
+
 ```
 
 # Binned semicovariogram of log-duration for Arizona
 
-#### Fields package
+I will model correlations using two packages: fields and geor.
+
+### Fields package
+
+I construct a binned semicoariogram for log-duration using the vgram function in the fields package. In the following plot, I display a scatter plot for the number of data points per bin.
 
 ```{r echo = F, message = F, warning = F}
 
-# Get data for ny
+# Get data for az
 ny <- ufo %>%
   filter(state == 'az')
 
@@ -549,7 +777,7 @@ ny_vstats <- ny_vstats %>%
 
 ```
 
-```{r echo = F, message = F, warning = F}
+```{r echo = F, message = F, warning = F, eval = F}
 
 # Create binned boxplot of the covariogram points
 ggplot(data = ny_v, aes(x = as.factor(bin), y = Value)) +
@@ -562,7 +790,6 @@ ggplot(data = ny_v, aes(x = as.factor(bin), y = Value)) +
   stat_summary(fun.y=mean, geom="point", color = 'red')
 ```
 
-
 ```{r echo = F, message = F, warning = F}
 
 # Plot the number of points per bin
@@ -574,22 +801,65 @@ ggplot(data = ny_vstats, aes(x = Centers, y = N)) +
   theme(axis.text.x = element_text(angle = 90, vjust = 0))
 ```
 
+We see that there are a ton of distances within the first bin of the variogram. We may be averaging over too many points, and thus unable to see if there is spatial dependence at small distances. We try this again, but increasing the number of bins to 300.
+
+```{r echo = F, message = F, warning = F}
+
+# Create a semicovariogram for ny data
+v2 <- vgram(loc=grd,y=ny$logdur,N=300,lon.lat=TRUE)
+
+# Create data frame of values
+ny_v2 <- data.frame(Distance = v2$d,
+                   Value = sqrt(v2$vgram))
+
+# Add bins 
+breaks2 <- seq(0,round(.98*max(v2$d)/2),length.out = 100)
+ny_v2 <- ny_v2 %>%
+  mutate(bin = cut(Distance, breaks = breaks2))
+
+# Get statistics for summary        
+ny_vstats2 <- data.frame(Centers = v2$centers,
+                        Mean = v2$stats["mean",],
+                        Med = v2$stats["median",],
+                        N = v2$stats["N",])
+
+# Filter out first half of esimates
+ny_vstats2 <- ny_vstats2 %>%
+  filter(Centers <= round(.98*max(v$d)/2))
+```
+
+Now we finally plot the binned semi-covariogram.
+
+```{r echo = F, message = F, warning = F}
+
+# Plot the number of points per bin
+ggplot(data = ny_vstats2, aes(x = Centers, y = N)) +
+  geom_point(color = 'blue') +
+  xlab('Distance') +
+  ylab('Count') +
+  ggtitle('Number of points per bin') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0))
+```
+
 ```{r echo = F, message = F, warning = F}
 
 # Plot the variogram
-ggplot(data = ny_vstats, aes(x = Centers, y = Mean)) +
+ggplot(data = ny_vstats2, aes(x = Centers, y = Mean)) +
   geom_point(color = 'blue') +
   xlab('Distance') +
   ylab('semivariance') +
   ggtitle('Binned semi-covariogram estimate') +
   theme(axis.text.x = element_text(angle = 90, vjust = 0)) +
-  scale_x_continuous(limits = c(0, 150)) +
+  scale_x_continuous(limits = c(0, 100)) +
+  scale_y_continuous(limits = c(0,5)) +
   geom_smooth(method = 'lm', se = F, color = 'red')
 ```
 
 There does not appear to be much spatial correlation in the data.
 
-#### geoR package
+### geoR package
+
+We now do the same thing using the geor package. We note a technical difficulty here: geoR only accepts projected coordinates, so we lose some interpretability here. I display a plot of the original vs. projected coordinates for your reference. I also estimate variograms using two methods, classical binning and robust binning. I display both results, but I ultimately used the robust binning when I move on to parameter estimation of covariance functions.
 
 ```{r echo = F, message = F, warning = F}
 
@@ -646,29 +916,102 @@ plot(v.bc.r, main="Robust-bin", pch=19, cex=0.5,
      xlim = c(0,.04), ylim = c(3,5.5))
 ```
 
-#### Fitting a positive-definite functions
+### Fitting Covariance Functions
 
-```{r echo = TRUE, message = F, warning = F}
+I fit several different covariance functions to the data. It's difficult to determine an optimal function in terms of best fit. This is due to the noisyness of the data.
+
+```{r echo = F, message = F, warning = F}
 
 # Fit several variograms
 vfit1 <- variofit(v.bc.r,cov.model="exponential",weights="cressie")
-vfit2 <- variofit(v.bc.r,cov.model="powered.exponential",weights="cressie",
-                  nugget=0.3,fix.nugget=TRUE)
+vfit2 <- variofit(v.bc.r,cov.model="powered.exponential",weights="cressie", fix.nugget=F)
 vfit3 <- variofit(v.bc.r,cov.model="matern",weights="cressie",kappa=1)
 vfit4 <- variofit(v.bc.r,cov.model="spherical",weights="cressie")
+vfit5 <- variofit(v.bc.r,cov.model="pure.nugget",weights="cressie")
 
 # Plot the variogram
-plot(v.bc.r, xlim = c(0,.04), ylim = c(3.5,5))
-lines(vfit1)
+plot(v.bc.r, ylim = c(3.5,5))
+lines(vfit1,col="black")
 lines(vfit2,col="blue")
 lines(vfit3,col="red")
 lines(vfit4,col="green")
+lines(vfit5,col="purple")
+legend("bottomright",
+       legend=c("Exponential", "Powered Exponential", "Matern", "Spherecial","Pure Nugget"),
+       col=c("black", "blue", "red", "green", "purple"),
+       lty=1, cex=0.8)
+```
+
+### WLS Prediciton
+
+I arbitrarily choose the sphereical covariance model to estimate model parameters via weighted least squares. Our predictors are longitude and latitude. I display a table of the parameter estimates and the standard errors. 
+
+```{r echo = F, message = F, warning = F}
+
+# We use the exponential covariance model
+vfit <- variofit(v.bc.r,cov.model="spherical",weights="cressie")
+
+# Extract nugget effect
+tau2 <- vfit$nugget # tau^2
+
+# Extract covariance function parameters
+sigma2 <- vfit$cov.pars[1] # sigma^2
+a <- vfit$cov.pars[2] # a = range as exp(-r/a)
+
+# Function to compute spherical covariance
+sph <- function(x,a){
+  out <- 1 - (3/2) * (x/a) + (1/2) * (x/a)^3
+  out[x > a] <- 0
+  out
+}
+
+# Set up covariance matrix Sigma - for exponential model
+Sigma <- sigma2 * sph(rdist(grd.p),a=a)
+diag(Sigma) <- diag(Sigma) + tau2 # Add nugget
+
+# Construct regression matrix
+X <- cbind(1,grd.p)
+
+# Solve WLS
+beta.gls <- solve(t(X) %*% solve(Sigma) %*% X) %*% t(X) %*% solve(Sigma) %*% ny$logdur
+
+# Compute standard errors
+beta.gls.se <- sqrt(diag(solve(t(X) %*% solve(Sigma) %*% X)))
+
+# Put coefficients and intercept in a table
+wmod <- data.frame(Coefficient = c('Int','Long','Lat'),
+                   Estimate = beta.gls,
+                   Error = beta.gls.se)
+
+# Display the results
+grid.table(wmod,rows = NULL)
 
 ```
 
-# Strongest State Spatial Dependence
+### OLS Prediction
 
-# Best Location for UFO Sighting
+I also compute model parameters using ordinary least squares for comparison. With this model, we assume that there is no spatial correlation in the data. This corresponds to the "pure nugget" covariance model.
+
+```{r echo = F, message = F, warning = F}
+
+# Create linear model
+mylm <- lm(ny$logdur~grd.p)
+
+# Put coefficients and intercept in a table
+lmod <- data.frame(Coefficient = c('Int','Long','Lat'),
+                   Estimate = unname(summary(mylm)$coef[,2]),
+                   Error = unname(summary(mylm)$coef[,3]))
+
+# Display the results
+grid.table(lmod,rows = NULL)
+
+```
+
+# Summary
+
+We were unable to detect spatial correlation in the dataset. Our evidence comes from examining the data visually, and of course, with the use of semicovariograms. 
+
+Overall, I would trust the least squares estimates more than the weighted least squares estimates. For WLS, I believe our main problem occurrs when we estimate parameters for the covariance models. Ultimately, I think these covaraince functions are poor fits to the data. I believe for this dataset, when we assume the presence of a covariance model, we incorporate correlations in the model that are not actually present in the data. This exploads our standard errors and causes a large difference in parameter estimates from the OLS model.
 
 ```{r echo = TRUE, message = F, warning = F}
 ```
